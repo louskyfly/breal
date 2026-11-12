@@ -23,6 +23,9 @@ export default function Profile({
   onInvite,
   onLogout,
   onPrivacy,
+  onAdmin,
+  onCharter,
+  onStopSite,
   onDeletePost,
   notify,
 }: {
@@ -33,6 +36,9 @@ export default function Profile({
   onInvite: () => void;
   onLogout: () => void;
   onPrivacy: () => void;
+  onAdmin: () => void;
+  onCharter: () => void;
+  onStopSite: () => void;
   onDeletePost: (post: Post) => void;
   notify: (message: string, tone?: "plain" | "flash" | "error") => void;
 }) {
@@ -193,6 +199,17 @@ export default function Profile({
           </span>
         </button>
 
+        {data.me.role === "admin" && (
+          <button type="button" className="setting-row" onClick={onAdmin}>
+            <span className="setting-icon"><span className="mono">#</span></span>
+            <span className="setting-copy">
+              <span className="setting-title">Comptes &amp; codes de la classe</span>
+              <span className="setting-sub">Tous les @ et les codes à 4 chiffres.</span>
+            </span>
+            <ChevronLeftIcon size={16} className="setting-chevron" />
+          </button>
+        )}
+
         <button type="button" className="setting-row" onClick={onInvite}>
           <span className="setting-icon"><LinkIcon size={18} /></span>
           <span className="setting-copy">
@@ -211,6 +228,15 @@ export default function Profile({
           <ChevronLeftIcon size={16} className="setting-chevron" />
         </button>
 
+        <button type="button" className="setting-row" onClick={onCharter}>
+          <span className="setting-icon"><span className="mono">§</span></span>
+          <span className="setting-copy">
+            <span className="setting-title">Charte d’utilisation</span>
+            <span className="setting-sub">Droit à l’image, respect, données.</span>
+          </span>
+          <ChevronLeftIcon size={16} className="setting-chevron" />
+        </button>
+
         <button type="button" className="setting-row setting-demo" onClick={onTriggerMoment}>
           <span className="setting-icon"><TimerIcon size={18} /></span>
           <span className="setting-copy">
@@ -223,6 +249,17 @@ export default function Profile({
         <div className="settings-head settings-head-spaced">
           <span className="eyebrow">Le compte</span>
         </div>
+
+        {data.me.role === "admin" && (
+          <button type="button" className="setting-row setting-danger" onClick={onStopSite}>
+            <span className="setting-icon"><span className="mono">■</span></span>
+            <span className="setting-copy">
+              <span className="setting-title">Arrêter totalement le site</span>
+              <span className="setting-sub">Toutes les pages afficheront « Cette page n’existe pas ».</span>
+            </span>
+            <span className="setting-state is-danger">Stop</span>
+          </button>
+        )}
 
         {!confirmLogout ? (
           <button type="button" className="setting-row" onClick={() => setConfirmLogout(true)}>

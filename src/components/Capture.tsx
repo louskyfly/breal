@@ -432,7 +432,11 @@ export default function Capture({
       });
       onPublished(post);
     } catch (e) {
-      const message = e instanceof ApiError ? e.message : "La publication a échoué.";
+      const message = e instanceof ApiError
+        ? e.status === 401
+          ? "Session expirée : recharge la page et reconnecte-toi."
+          : e.message
+        : "La publication a échoué.";
       setPublishError(message);
       setPhase("review");
     }
@@ -730,6 +734,7 @@ export default function Capture({
           </div>
         </div>
         <footer className="review-footer">
+          {publishError && <p className="form-error review-error">{publishError}</p>}
           <div className="review-footer-inner">
             <button
               type="button"

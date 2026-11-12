@@ -3,6 +3,8 @@ import type { Bootstrap, Comment, Post, User } from "./lib/types";
 import { api, ApiError, getToken, setToken } from "./lib/api";
 import { fmtTime, lateLabel } from "./lib/format";
 import Onboarding from "./components/Onboarding";
+import AdminAccounts from "./components/AdminAccounts";
+import Consent, { CharterSheet } from "./components/Consent";
 import Feed, { MomentPanel } from "./components/Feed";
 import Friends from "./components/Friends";
 import Memories from "./components/Memories";
@@ -46,6 +48,15 @@ export default function App() {
   const [deleteId, setDeleteId] = useState<number | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [privacyOpen, setPrivacyOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const [charterOpen, setCharterOpen] = useState(false);
+  const [consent, setConsent] = useState(() => {
+    try {
+      return localStorage.getItem("breal.consent") === "2026-11";
+    } catch {
+      return false;
+    }
+  });
   const [toast, setToast] = useState<ToastData | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -317,17 +328,32 @@ export default function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  function logout() {
-    setToken(null);
+  async function stopSite() {
+    const ok = window.confirm(
+      "Arrêter totalement le site ?\n\nToutes les pages afficheront « Cette page n’existe pas » jusqu’au redémarrage du serveur.",
+    );
+    if (!ok) return;
+    try {
+      await api.stopSite();
+      window.location.reload();
+    } catch (e) {
+      notify(e instanceof ApiError ? e.message : "Impossible d’arrêter le site", "error");
+    }
+  }
+
+  function logout() {    setToken(null);
     dataRef.current = null;
     seenPosts.current = null;
     lastMoment.current = null;
     setData(null);
+    setAdminOpen(false);
     setCameraOpen(false);
     setTab("feed");
     setFeedTab("friends");
     window.scrollTo({ top: 0 });
   }
+
+  if (!consent) return <Consent onAccept={() => setConsent(true)} />;
 
   if (booting) {
     return (
@@ -450,6 +476,9 @@ export default function App() {
               onInvite={shareInvite}
               onLogout={logout}
               onPrivacy={() => setPrivacyOpen(true)}
+              onAdmin={() => setAdminOpen(true)}
+              onCharter={() => setCharterOpen(true)}
+              onStopSite={stopSite}
               onDeletePost={(post) => setDeleteId(post.id)}
               notify={notify}
             />
@@ -588,6 +617,10 @@ export default function App() {
       />
 
       <PrivacySheet open={privacyOpen} onClose={() => setPrivacyOpen(false)} />
+
+      {charterOpen && <CharterSheet onClose={() => setCharterOpen(false)} />}
+
+      {adminOpen && <AdminAccounts onClose={() => setAdminOpen(false)} notify={notify} />}
 
       {toast && <Toast message={toast.message} tone={toast.tone} />}
     </div>

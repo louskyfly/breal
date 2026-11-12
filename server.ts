@@ -2,9 +2,10 @@ import index from "./index.html";
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 
-mkdirSync("./data/uploads", { recursive: true });
+const DATA_DIR = process.env.DATA_DIR || "./data";
+mkdirSync(`${DATA_DIR}/uploads`, { recursive: true });
 
-const db = new Database("./data/breal.sqlite", { create: true });
+const db = new Database(`${DATA_DIR}/breal.sqlite`, { create: true });
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
@@ -59,7 +60,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
 `);
 
+/* migrations : code à 4 chiffres + rôle (prof / élève) */
+for (const stmt of [
+  "ALTER TABLE users ADD COLUMN pin TEXT",
+  "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'student'",
+]) {
+  try { db.exec(stmt); } catch { /* colonne déjà présente */ }
+}
+
 const LATE_WINDOW = 120;
+const PORT = Number(process.env.PORT || 4000);
 const EMOJIS = ["😂", "😍", "🔥", "😮", "💀", "🫶", "👀", "😭"];
 
 type Row = Record<string, any>;
@@ -97,7 +107,37 @@ function getMoment(): Row {
 }
 
 function publicUser(u: Row) {
-  return { id: u.id, name: u.name, username: u.username, color: u.color };
+  return { id: u.id, name: u.name, username: u.username, color: u.color, role: u.role || "student" };
+}
+
+const randomPin = () => String(Math.floor(1000 + Math.random() * 9000));
+const slug = (s: string) =>
+  s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9._]/g, "").slice(0, 20);
+
+function uniqueUsername(base: string) {
+  let u = slug(base) || "eleve";
+  if (u.length < 3) u = `${u}${Math.floor(100 + Math.random() * 900)}`;
+  let candidate = u;
+  let i = 1;
+  while (db.query("SELECT id FROM users WHERE username = ?").get(candidate)) {
+    candidate = `${u.slice(0, 16)}${i++}`;
+  }
+  return candidate;
+}
+
+const loginAttempts = new Map<string, { n: number; until: number }>();
+function tooManyAttempts(key: string) {
+  const nowTs = Date.now();
+  const rec = loginAttempts.get(key);
+  if (!rec || rec.until < nowTs) return false;
+  return rec.n >= 6;
+}
+function noteAttempt(key: string, ok: boolean) {
+  if (ok) { loginAttempts.delete(key); return; }
+  const nowTs = Date.now();
+  const rec = loginAttempts.get(key);
+  if (!rec || rec.until < nowTs) loginAttempts.set(key, { n: 1, until: nowTs + 120_000 });
+  else rec.n++;
 }
 
 function hydrate(rows: Row[], meId: number) {
@@ -402,11 +442,11 @@ function seedIfNeeded() {
   }
 }
 
-seedIfNeeded();
+// Exemples préfabriqués retirés : la base démarre vide.
 
 // ---------- routes ----------
 const server = Bun.serve({
-  port: Number(process.env.PORT || 4000),
+  port: PORT,
   development: process.env.NODE_ENV !== "production",
   maxRequestBodySize: 30 * 1024 * 1024,
   routes: {
@@ -423,26 +463,152 @@ const server = Bun.serve({
     "/uploads/:file": (req) => {
       const file = (req as any).params.file as string;
       if (!/^[a-z0-9-]+\.(jpg|png|webp)$/.test(file)) return new Response("not found", { status: 404 });
-      return new Response(Bun.file(`./data/uploads/${file}`), { headers: { "cache-control": "public, max-age=31536000, immutable" } });
+      return new Response(Bun.file(`${DATA_DIR}/uploads/${file}`), { headers: { "cache-control": "public, max-age=31536000, immutable" } });
     },
     "/api/health": { GET: () => json({ ok: true }) },
 
-    "/api/join": {
+    "/api/setup": {
+      GET: () => {
+        const count = (db.query("SELECT COUNT(*) AS c FROM users").get() as Row).c;
+        return json({ needsAdmin: count === 0 });
+      },
       POST: async (req) => {
+        const count = (db.query("SELECT COUNT(*) AS c FROM users").get() as Row).c;
+        if (count > 0) return fail("Le compte prof existe déjà", 403);
         const body = (await req.json().catch(() => null)) as Row | null;
         if (!body) return fail("Requête invalide");
         const name = String(body.name || "").trim().slice(0, 30);
-        let username = String(body.username || "").trim().toLowerCase().replace(/^@/, "").replace(/[^a-z0-9._]/g, "").slice(0, 20);
+        const username = slug(String(body.username || ""));
+        const pin = String(body.pin || "").trim();
         const color = /^#[0-9a-f]{6}$/i.test(String(body.color || "")) ? String(body.color) : "#E9FF3F";
         if (name.length < 2) return fail("Ton prénom, au moins deux lettres");
         if (username.length < 3) return fail("Ton @ doit faire au moins 3 caractères");
-        if (db.query("SELECT id FROM users WHERE username = ?").get(username)) return fail("Ce @ est déjà pris", 409);
+        if (!/^\d{4}$/.test(pin)) return fail("Le code doit faire exactement 4 chiffres");
         const token = crypto.randomUUID();
         const res = db
-          .query("INSERT INTO users (name, username, color, token, circle, created_at, last_seen) VALUES (?, ?, ?, ?, 'friends', ?, ?)")
-          .run(name, username, color, token, now(), now());
+          .query(
+            "INSERT INTO users (name, username, color, token, circle, role, pin, created_at, last_seen) VALUES (?, ?, ?, ?, 'friends', 'admin', ?, ?, ?)",
+          )
+          .run(name, username, color, token, pin, now(), now());
         const user = db.query("SELECT * FROM users WHERE id = ?").get(Number(res.lastInsertRowid)) as Row;
         return json({ token, user: publicUser(user) });
+      },
+    },
+
+    "/api/login": {
+      POST: async (req) => {
+        const body = (await req.json().catch(() => null)) as Row | null;
+        if (!body) return fail("Requête invalide");
+        const username = slug(String(body.username || ""));
+        const pin = String(body.pin || "").trim();
+        const ip = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "local";
+        const key = `${ip}:${username}`;
+        if (tooManyAttempts(key)) return fail("Trop d’essais. Attends deux minutes.", 429);
+        if (!/^\d{4}$/.test(pin)) return fail("Le code doit faire 4 chiffres");
+        const user = db.query("SELECT * FROM users WHERE username = ?").get(username) as Row | null;
+        if (!user || !user.pin || user.pin !== pin) {
+          noteAttempt(key, false);
+          return fail("Pseudo ou code incorrect", 401);
+        }
+        noteAttempt(key, true);
+        db.query("UPDATE users SET last_seen = ? WHERE id = ?").run(now(), user.id);
+        return json({ token: user.token, user: publicUser(user) });
+      },
+    },
+
+    "/api/admin/accounts": {
+      GET: (req) => {
+        const me = getUser(req);
+        if (!me) return fail("Session expirée", 401);
+        if (me.role !== "admin") return fail("Réservé au prof", 403);
+        const rows = db
+          .query(
+            `SELECT u.id, u.name, u.username, u.color, u.pin, u.role, u.last_seen,
+                    (SELECT COUNT(*) FROM posts p WHERE p.user_id = u.id AND p.day = ?) AS posted
+             FROM users u ORDER BY u.role DESC, u.name ASC`,
+          )
+          .all(dayKey()) as Row[];
+        return json({
+          accounts: rows.map((r) => ({
+            id: r.id,
+            name: r.name,
+            username: r.username,
+            color: r.color,
+            pin: r.pin,
+            role: r.role,
+            lastSeen: r.last_seen,
+            posted: r.posted > 0,
+          })),
+        });
+      },
+      POST: async (req) => {
+        const me = getUser(req);
+        if (!me) return fail("Session expirée", 401);
+        if (me.role !== "admin") return fail("Réservé au prof", 403);
+        const body = (await req.json().catch(() => null)) as Row | null;
+        const name = String(body?.name || "").trim().slice(0, 30);
+        if (name.length < 2) return fail("Prénom trop court");
+        const username = uniqueUsername(String(body?.username || name));
+        let pin = String(body?.pin || "").trim();
+        if (!/^\d{4}$/.test(pin)) pin = randomPin();
+        const PALETTE = ["#E9FF3F", "#FF6B4A", "#7C9EFF", "#FF9ED2", "#B7F0C2", "#C9B6FF", "#FFC857", "#FF5A4E"];
+        const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+        const token = crypto.randomUUID();
+        const res = db
+          .query(
+            "INSERT INTO users (name, username, color, token, circle, role, pin, created_at, last_seen) VALUES (?, ?, ?, ?, 'friends', 'student', ?, ?, 0)",
+          )
+          .run(name, username, color, token, pin, now());
+        const user = db.query("SELECT * FROM users WHERE id = ?").get(Number(res.lastInsertRowid)) as Row;
+        return json({ account: { ...publicUser(user), pin } });
+      },
+    },
+
+    "/api/admin/accounts/:id/pin": {
+      POST: (req) => {
+        const me = getUser(req);
+        if (!me) return fail("Session expirée", 401);
+        if (me.role !== "admin") return fail("Réservé au prof", 403);
+        const id = Number((req as any).params.id);
+        const user = db.query("SELECT * FROM users WHERE id = ?").get(id) as Row | null;
+        if (!user) return fail("Compte introuvable", 404);
+        const pin = randomPin();
+        db.query("UPDATE users SET pin = ? WHERE id = ?").run(pin, id);
+        return json({ id, pin });
+      },
+    },
+
+    "/api/admin/accounts/:id": {
+      DELETE: (req) => {
+        const me = getUser(req);
+        if (!me) return fail("Session expirée", 401);
+        if (me.role !== "admin") return fail("Réservé au prof", 403);
+        const id = Number((req as any).params.id);
+        if (id === me.id) return fail("Tu ne peux pas supprimer ton propre compte", 400);
+        if (!db.query("SELECT id FROM users WHERE id = ?").get(id)) return fail("Compte introuvable", 404);
+        db.query("DELETE FROM reactions WHERE user_id = ?").run(id);
+        db.query("DELETE FROM comments WHERE user_id = ?").run(id);
+        db.query("DELETE FROM reactions WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)").run(id);
+        db.query("DELETE FROM comments WHERE post_id IN (SELECT id FROM posts WHERE user_id = ?)").run(id);
+        db.query("DELETE FROM posts WHERE user_id = ?").run(id);
+        db.query("DELETE FROM users WHERE id = ?").run(id);
+        return json({ ok: true });
+      },
+    },
+
+    "/api/admin/stop": {
+      POST: (req) => {
+        const me = getUser(req);
+        if (!me) return fail("Session expirée", 401);
+        if (me.role !== "admin") return fail("Réservé au prof", 403);
+        setTimeout(haltSite, 200);
+        return json({ ok: true });
+      },
+    },
+
+    "/api/join": {
+      POST: () => {
+        return fail("Les comptes sont créés par le prof. Connecte-toi avec ton @ et ton code à 4 chiffres.", 403);
       },
     },
 
@@ -475,7 +641,7 @@ const server = Bun.serve({
         if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) return fail("Format non supporté");
         const ext = file.type === "image/png" ? "png" : file.type === "image/webp" ? "webp" : "jpg";
         const filename = `${crypto.randomUUID()}.${ext}`;
-        await Bun.write(`./data/uploads/${filename}`, file);
+        await Bun.write(`${DATA_DIR}/uploads/${filename}`, file);
         return json({ url: `/uploads/${filename}` });
       },
     },
@@ -585,5 +751,18 @@ const server = Bun.serve({
     return new Response("Not found", { status: 404 });
   },
 });
+
+function haltSite() {
+  try { server.stop(true); } catch { /* déjà arrêté */ }
+  const dead = () =>
+    new Response("Cette page n'existe pas.", {
+      status: 404,
+      headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+    });
+  setTimeout(() => {
+    Bun.serve({ port: PORT, fetch: dead, error: dead });
+    console.log("Site arrêté — toutes les pages répondent 404.");
+  }, 150);
+}
 
 console.log(`\n  breal. → ${server.url.href}\n`);

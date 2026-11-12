@@ -3,6 +3,18 @@ export type User = {
   name: string;
   username: string;
   color: string;
+  role?: "admin" | "student";
+};
+
+export type AdminAccount = {
+  id: number;
+  name: string;
+  username: string;
+  color: string;
+  pin: string;
+  role: "admin" | "student";
+  lastSeen: number;
+  posted: boolean;
 };
 
 export type Comment = {
