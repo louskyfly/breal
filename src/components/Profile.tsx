@@ -284,7 +284,7 @@ export default function Profile({
       <footer className="profile-foot">
         <p className="wordmark foot-mark">breal<span className="wordmark-dot">.</span></p>
         <p>Fait à la main. Pas d’algorithme, pas de filtre, pas de pub.</p>
-        <p className="mono">Version 1.0 — défi entre potes, novembre 2026</p>
+        <p className="mono">Version 1.1 — codes, charte, arrêt · novembre 2026</p>
       </footer>
     </div>
   );
